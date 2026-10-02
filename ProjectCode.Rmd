@@ -1,0 +1,635 @@
+---
+title: "Project Code"
+author: "Isabel Xiao"
+date: "2024-11-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Cleaning
+
+```{r}
+# Loading in data & packages
+library(tidyverse)
+library(tidygeocoder)
+library(ggplot2)
+library(ggthemes)
+library(ggalluvial)
+library(plotly)
+library(treemapify)
+library(fmsb)
+library(viridis)
+library(bslib)
+library(shiny)
+library(RColorBrewer)
+uva_housing = read.csv("uva_housing_FINAL.csv")
+
+
+# Add a column of management property or individual landlord
+
+
+uva_housing <- uva_housing %>%
+  mutate(
+    Ownership = case_when(
+      Management_Company %in% c("MSC", "Real Property Management", "Woodard Properties", "Inv Group LLC", "Arlington Park Townhomes", "Atrium", "Breeden Property Management", "CBS", "Cathcart Property Management", "Dominion Realty Partners", "Godfrey Property Management", "Fogelman Properties", "Frye Properties", "Metzger & Company Inc", "NewCastle Management", "RPM", "Royal Blue Properties", "Shamrock Corporation", "Thalhimer Multifamily", "The New House Company", "The Scion Group", "University Apartments LLC", "University Partners", "Vest Residential") ~ "Company",
+      TRUE ~ "Landlord"
+    )
+  )
+
+
+
+# Add a column of rent by bedroom, deal with the ranges
+uva_housing2 = uva_housing
+uva_housing2 <- uva_housing %>%
+  mutate(Total_Price = gsub("\\$|\\s", "", Total_Price)) %>%
+  mutate(Total_Price = gsub("\\,|\\s", "", Total_Price)) %>% 
+  separate(Num_Bedrooms, into = c("Bedrooms_Low", "Bedrooms_High"), sep = "-", fill = "right", convert = TRUE) %>%
+  separate(Num_Bathrooms, into = c("Bathrooms_Low", "Bathrooms_High"), sep = "-", fill = "right", convert = TRUE) %>%
+  separate(Total_Price, into = c("Price_Low", "Price_High"), sep = "-", fill = "right", convert = TRUE) %>%
+  mutate(
+    Bedrooms_High = ifelse(is.na(Bedrooms_High), Bedrooms_Low, Bedrooms_High),
+    Bathrooms_High = ifelse(is.na(Bathrooms_High), Bathrooms_Low, Bathrooms_High),
+    Price_High = ifelse(is.na(Price_High), Price_Low, Price_High)
+    ) %>%
+  rowwise() %>%
+  do(data.frame(
+    Name = .$Name,
+    Address = .$Address,
+    Housing_Type = .$Housing_Type,
+    Neighborhood = .$Neighborhood,
+    Distance_UVA = .$Distance_UVA,
+    Sq_Feet = .$Sq_Feet,
+    Ownership = .$Ownership,
+    Management_Company = .$Management_Company,
+    Num_Bedrooms = c(.$Bedrooms_Low, .$Bedrooms_High),
+    Num_Bathrooms = c(.$Bathrooms_Low, .$Bathrooms_High),
+    Total_Price = c(.$Price_Low, .$Price_High)
+    )) %>%
+  ungroup() %>% 
+  mutate(Price_Per_Bedroom = as.numeric(Total_Price) / as.numeric(Num_Bedrooms))
+
+# Delete duplicate rows
+uva_housing = uva_housing %>% distinct(Name, .keep_all = TRUE)
+uva_housing2 <- uva_housing2[!duplicated(uva_housing2), ]
+
+
+
+
+write.csv(uva_housing2, "uva_housing2.csv")
+
+
+# Okay other stuff
+uva_housing2 = read.csv("uva_housing2.csv")
+
+uva_housing2$Price_Per_Bedroom = as.numeric(uva_housing2$Price_Per_Bedroom)
+uva_housing2$Total_Price = as.numeric(uva_housing2$Total_Price)
+
+uva_housing2 = uva_housing2 %>% mutate(Listing_ID = row_number())
+```
+
+## Scatterplot of Price per Bedroom vs Distance from UVA
+
+```{r, fig.show="hide"}
+# Remove outlier
+uva_housing_plot3 = uva_housing2 %>% filter(Distance_UVA <= 20)
+
+uva_housing_plot3$Neighborhood <- factor(
+  uva_housing_plot3$Neighborhood,
+  levels = c("JPA", "Corner", "Lewis Mountain", "Barracks", "Starr Hill", "Venable", "10th St", "Eagles Landing", "Downtown", "North Downtown", "Other/Far") # Replace with your specific order
+)
+
+# Make scatterplot
+scatterplot = plot_ly(uva_housing_plot3, x=~Distance_UVA, y=~Price_Per_Bedroom, color=~Neighborhood, type='scatter', mode='markers', colors ='plasma', frame = ~Neighborhood)
+
+scatterplot %>% layout(
+  title = 'Price per Bedroom vs Distance from UVA',
+  xaxis = list(title = 'Distance from UVA', gridcolor = "gray", zerolinecolor = "gray"),
+  yaxis = list(title = 'Price Per Bedroom',  gridcolor = "gray"),
+  plot_bgcolor = "black",
+  paper_bgcolor = "black",
+  font = list(
+      family = "Arial, sans-serif",
+      size = 12,
+      color = "white"
+  ),
+  showlegend = FALSE,
+  updatemenus = list(
+    list(
+        x = 0, # Adjust x position (0 to 1, left to right)
+        y = 1
+      )
+  )
+)
+```
+
+```{r, fig.show="hide"}
+uva_housing_plot3 = uva_housing2 %>% filter(Neighborhood != "Other/Far")
+
+scatterplot = plot_ly(uva_housing_plot3, x=~Distance_UVA, y=~Price_Per_Bedroom, color=~Neighborhood, type='scatter', mode='markers', colors ='plasma') 
+
+scatterplot %>% layout(
+  title = 'Price per Bedroom vs Distance from UVA',
+  xaxis = list(title = 'Distance from UVA', gridcolor = "gray", zerolinecolor = "gray"),
+  yaxis = list(title = 'Price Per Bedroom', gridcolor = "gray"),
+  plot_bgcolor = "black",
+  paper_bgcolor = "black",
+  font = list(
+      family = "Arial, sans-serif",
+      size = 12,
+      color = "white"
+  )
+) 
+```
+
+## Bar graph with available rentals by neighborhood
+
+```{r, fig.show="hide"}
+ggplot(uva_housing, aes(x=Neighborhood, fill=Neighborhood)) + 
+  geom_bar(stat="count") +
+  labs(x="Neighborhood", y="Count", title="Count of UVA Off-Grounds Housing Neighborhoods") +
+  theme(axis.text.x = element_text(angle = 20, color = "white"),
+        axis.text.y = element_text(color = "white"), 
+        axis.title = element_text(color = "white"), 
+        plot.title = element_text(hjust = 0.5, color = "white"), 
+        panel.grid.major.x = element_line(color="#242323"),
+        panel.grid.major.y = element_line(color="#242323"),
+        panel.grid.minor.x = element_line(color="#242323"),
+        panel.grid.minor.y = element_line(color="#242323"),
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        legend.background = element_rect(fill = "black"), 
+        legend.text = element_text(color = "white"), 
+        legend.title = element_text(color = "white"),
+        legend.position = "none") +
+  scale_fill_viridis_d(option="plasma")
+```
+
+## Boxplots with average distribution by neighborhood
+
+```{r, fig.show="hide"}
+ggplot(uva_housing2, aes(x=Price_Per_Bedroom, y=Neighborhood, fill=Neighborhood)) +
+  geom_boxplot(color="white") +
+  labs(x="Rent Price Per Bedroom", y="Neighborhood", title="Rent Price Distribution by Neighborhood") +
+  scale_fill_viridis_d(option="plasma") +
+  theme(axis.text.x = element_text(color = "white"),
+        axis.text.y = element_text(color = "white"), 
+        axis.title = element_text(color = "white"), 
+        plot.title = element_text(hjust = 0.5, color = "white"), 
+        panel.grid.major.x = element_line(color="#242323"),
+        panel.grid.major.y = element_line(color="#242323"),
+        panel.grid.minor.x = element_line(color="#242323"),
+        panel.grid.minor.y = element_line(color="#242323"),
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        legend.background = element_rect(fill = "black"), 
+        legend.text = element_text(color = "white"), 
+        legend.title = element_text(color = "white"),
+        legend.position = "none")
+```
+
+## Bar graph with top 6 management companies 
+
+```{r, fig.show="hide"}
+uva_housing %>% group_by(Management_Company) %>% summarise(count=n()) %>% arrange(., -count)
+
+uva_housing <- uva_housing %>%
+  mutate(
+    Relevant_Management = case_when(
+      Management_Company %in% c("Real Property Management", "Woodard Properties", "MSC", "Inv Group LLC", "CBS", "Godfrey Property Management") ~ Management_Company,
+      TRUE ~ "Other"
+    )
+  )
+
+uva_housing <- uva_housing %>%
+  mutate(
+    Top6 = case_when(
+      Management_Company %in% c("Real Property Management", "Woodard Properties", "MSC", "Inv Group LLC", "CBS", "Godfrey Property Management") ~ "Top 6",
+      TRUE ~ "Other"
+    )
+  )
+
+ggplot(uva_housing, aes(y=Top6, fill=Relevant_Management)) + 
+  geom_bar(stat="count") +
+  labs(y="Management", x="Count", title="Count of Top 6 Management Companies") +
+  scale_fill_viridis_d(option="plasma", name="Top 6 Management") +
+  theme(axis.text.x = element_text(color = "white"),
+        axis.text.y = element_text(color = "white"), 
+        axis.title = element_text(color = "white"), 
+        plot.title = element_text(hjust = 0.5, color = "white"), 
+        panel.grid.major.x = element_line(color="#242323"),
+        panel.grid.major.y = element_line(color="#242323"),
+        panel.grid.minor.x = element_line(color="#242323"),
+        panel.grid.minor.y = element_line(color="#242323"),
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        legend.background = element_rect(fill = "black"), 
+        legend.text = element_text(color = "white"), 
+        legend.title = element_text(color = "white"))
+
+# Introduce breaks
+```
+
+## Alluvial plot with management and housing type
+
+```{r, fig.show="hide"}
+
+uva_housing2 <- uva_housing2 %>%
+  mutate(Housing_Abbreviation = case_when(
+    Housing_Type == "Apartment Complex" ~ "AC",
+    Housing_Type == "House" ~ "H",
+    Housing_Type == "Townhouse" ~ "T",
+    Housing_Type == "Apartment in House" ~ "AH",
+    TRUE ~ "Other"  # In case there are other values, we use "Other" as a default
+  ))
+
+bright_colors <- c("#F0F921FF", "#FCA636FF", "#E16462FF", "#6A00A8FF")  # Bright colors from the plasma palette
+
+ggplot(uva_housing2, aes(axis1 = Ownership, axis2 = Housing_Type)) +
+  geom_alluvium(aes(fill=factor(Housing_Type)),
+                width = 0, reverse=FALSE, alpha=0.8) +
+  guides(fill='none') +
+  geom_stratum(width=1/8, reverse=FALSE, color="#242323") +
+  geom_text(color="black", stat = "stratum", aes(label= after_stat(stratum)), reverse = FALSE, angle=20, size=3) +
+  scale_x_continuous(breaks = 1:3, labels = c("Ownership", "Housing Type", "Number of Bedrooms")) +
+  ggtitle("Alluvial Plot of Housing Types by Ownership") +
+  scale_fill_manual(values=bright_colors) + # Use plasma color palette
+  theme(
+    axis.text.x = element_text(color = "white"),
+    axis.text.y = element_text(color = "white"), 
+    axis.title = element_text(color = "white"), 
+    plot.title = element_text(hjust = 0.5, color = "white"), 
+    panel.grid.major.x = element_line(color = "#242323"),
+    panel.grid.major.y = element_line(color = "#242323"),
+    panel.grid.minor.x = element_line(color = "#242323"),
+    panel.grid.minor.y = element_line(color = "#242323"),
+    panel.background = element_rect(fill = "black"),
+    plot.background = element_rect(fill = "black"),
+    legend.background = element_rect(fill = "black"), 
+    legend.text = element_text(color = "white"), 
+    legend.title = element_text(color = "white")
+  )
+
+```
+
+## 7: Are prices different across types of housing?
+
+```{r, fig.show="hide"}
+uva_housing2 <- uva_housing2 %>%
+  mutate(Housing_Type = case_when(
+    Housing_Type == "AC" ~ "Apartment Complex",
+    Housing_Type == "T"  ~ "Townhouse",
+    Housing_Type == "AH" ~ "Apartment in House",
+    Housing_Type == "H"  ~ "House",
+    TRUE ~ Housing_Type # Keeps original value if not matched
+  ))
+
+bright_colors <- c("#FCA636FF", "#B12A90FF", "#6A00A8FF", "#0D0887FF")
+
+ggplot(uva_housing2, aes(factor(Housing_Type), Price_Per_Bedroom, fill=Housing_Type)) + geom_violin(alpha=0.8) + geom_jitter(color="white", width = 0.1, alpha=0.4, size=1.8) +
+  labs(x="Housing Type", y="Price Per Bedroom", title="Rent Price Distribution by Housing Type", fill="Housing Type") +
+  theme(axis.text.x = element_text(color = "white"),
+    axis.text.y = element_text(color = "white"), 
+    axis.title = element_text(color = "white"), 
+    plot.title = element_text(hjust = 0.5, color = "white"), 
+    panel.grid.major.x = element_line(color = "#242323"),
+    panel.grid.major.y = element_line(color = "#242323"),
+    panel.grid.minor.x = element_line(color = "#242323"),
+    panel.grid.minor.y = element_line(color = "#242323"),
+    panel.background = element_rect(fill = "black"),
+    plot.background = element_rect(fill = "black"),
+    legend.background = element_rect(fill = "black"), 
+    legend.text = element_text(color = "white"), 
+    legend.title = element_text(color = "white"),
+    legend.position = "none") +
+  scale_fill_manual(values=bright_colors)
+```
+
+
+
+## 8: What are the characteristics of listings above $1000 per bedroom?
+
+```{r, fig.show="hide"}
+uva_housing2 = uva_housing2 %>% rename(Management = Management_Company)
+
+ui <- fluidPage(
+      #"Graphs",
+      sidebarLayout(
+        sidebarPanel(
+          sliderInput("minPrice", "Minimum Price", min = 500, max=2400, value=1000, step=100),
+          HTML("<p style='font-size: 14px;'>Move the slider to display characteristics of listings above this minimum rent price.</p>")
+        ),
+      mainPanel(
+        plotOutput("companiesPlot"),
+        plotOutput("neighborhoodPlot"),
+        plotOutput("housingTypePlot")
+    )
+  )
+)
+
+server <- function(input, output) {
+  output$companiesPlot <- renderPlot({
+    filtered_data <- uva_housing2 %>% filter(Price_Per_Bedroom >= input$minPrice)
+    
+    data_summary <- filtered_data %>%
+      group_by(Management) %>%
+      summarise(Count = n())
+    
+    bright_colors <- c("#0D0887FF", "#B12A90FF", "#56106EFF", "#FCA636FF", "#6A00A8FF")
+    continuous_palette <- colorRampPalette(bright_colors)
+    
+    unique_management <- unique(data_summary$Management)  # Get unique categories
+    random_colors <- sample(bright_colors, length(unique_management), replace=TRUE)  # Sample colors
+
+    # Map the random colors to each Management category
+    color_mapping <- setNames(random_colors, unique_management)
+    
+    # Treemap
+    ggplot(data_summary, aes(area = Count, fill = Management, label = Management)) +
+      geom_treemap() +
+      geom_treemap_text(colour = "white", place = "centre", grow = TRUE) +
+      labs(title = "Management of Listings Above Minimum Price") +
+      theme(axis.text.x = element_text(angle = 20, color = "white"),
+        axis.text.y = element_text(color = "white"), 
+        axis.title = element_text(color = "white"), 
+        plot.title = element_text(hjust = 0.5, color = "white"), 
+        panel.grid.major.x = element_line(color="#242323"),
+        panel.grid.major.y = element_line(color="#242323"),
+        panel.grid.minor.x = element_line(color="#242323"),
+        panel.grid.minor.y = element_line(color="#242323"),
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        legend.background = element_rect(fill = "black"), 
+        legend.text = element_text(color = "white"), 
+        legend.title = element_text(color = "white"),
+        legend.position = "none") +
+      scale_fill_manual(values=color_mapping) +  # Repeating Stata colors
+      guides(fill = "none")
+  })
+  
+  output$neighborhoodPlot <- renderPlot({
+    filtered_data <- uva_housing2 %>% filter(Price_Per_Bedroom >= input$minPrice)
+    
+    overall_avg_price <- mean(filtered_data$Price_Per_Bedroom)
+    
+    ggplot(filtered_data, aes(x = Neighborhood, y = Price_Per_Bedroom, color = Neighborhood)) +
+       geom_hline(yintercept = overall_avg_price, linetype = "dashed", color = "#F0F921FF", size = 1) +  # Horizontal average line
+       geom_segment(aes(x = Neighborhood, 
+                        xend = Neighborhood, 
+                        y = overall_avg_price, 
+                        yend = Price_Per_Bedroom),
+                    color = "white", 
+                    size = 0.8) +  # Lollipop stem
+       geom_point(size = 5) +  # Lollipop head
+       labs(
+         title = paste("Prices by Neighborhood with Average Price Line of: ", round(overall_avg_price, 2)),
+         x = "Neighborhood",
+         y = "Price Per Bedroom"
+       ) +
+       theme(
+         axis.text.x = element_text(color = "white"),
+        axis.text.y = element_text(color = "white"), 
+        axis.title = element_text(color = "white"), 
+        plot.title = element_text(hjust = 0.5, color = "white"), 
+        panel.grid.major.x = element_line(color="#242323"),
+        panel.grid.major.y = element_line(color="#242323"),
+        panel.grid.minor.x = element_line(color="#242323"),
+        panel.grid.minor.y = element_line(color="#242323"),
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        legend.background = element_rect(fill = "black"), 
+        legend.text = element_text(color = "white"), 
+        legend.title = element_text(color = "white"),
+        legend.position = "none"
+       ) + scale_color_viridis_d(option="plasma") 
+  
+})
+  
+  output$housingTypePlot <- renderPlot({
+    filtered_data <- uva_housing2 %>% filter(Price_Per_Bedroom >= input$minPrice)
+    
+    # Bar Graph
+    ggplot(filtered_data, aes(x=Housing_Type, fill=Housing_Type)) +
+      geom_bar(stat="count") +
+      labs(x="Housing Type", y="Count", title="Housing Type of Listings Above Minimum Price") +
+      theme(axis.text.x = element_text(color = "white"),
+        axis.text.y = element_text(color = "white"), 
+        axis.title = element_text(color = "white"), 
+        plot.title = element_text(hjust = 0.5, color = "white"), 
+        panel.grid.major.x = element_line(color="#242323"),
+        panel.grid.major.y = element_line(color="#242323"),
+        panel.grid.minor.x = element_line(color="#242323"),
+        panel.grid.minor.y = element_line(color="#242323"),
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        legend.background = element_rect(fill = "black"), 
+        legend.text = element_text(color = "white"), 
+        legend.title = element_text(color = "white"),
+        legend.position = "none") +
+      scale_fill_viridis_d(option="plasma")
+  })
+  
+}
+shinyApp(ui = ui, server = server)
+```
+
+
+## 9: Comparing Listings with Lollipop Plots
+
+```{r, fig.show="hide"}
+uva_housing2 <- uva_housing2 %>%
+  mutate(Listing_ID = row_number())
+
+uva_housing2 <- uva_housing2 %>%
+  mutate(Listing_ID2 = paste("Listing_ID: ", row_number()))
+
+ui <- fluidPage(
+  
+  navset_card_underline(
+    nav_panel("Listing Comparison Table",
+              sidebarLayout(
+                sidebarPanel(
+                  numericInput("priceHigh", "High end price/bedroom", 800, min = 0),
+                  numericInput("priceLow", "Low end price/bedroom", 400, min = 0),
+                  selectInput("neighborhood", "Select Neighborhood", 
+                              choices = c("All", unique(uva_housing2$Neighborhood)), 
+                              multiple = FALSE),
+                  sliderInput("distance_uva", "Distance from UVA (miles)", min = 0, max = 10, step = 0.1, value = 0.1),
+                  sliderInput("num_bedrooms", "Number of bedrooms", min = 1, max = 4, value = 2),
+                  selectInput("housing_type", "Select Housing Type", 
+                              choices = c("All", unique(uva_housing2$Housing_Type)), 
+                              multiple = FALSE)
+                ),
+                mainPanel(
+                  tableOutput("ListingSelector")
+                )
+              )
+              
+    ),
+    nav_panel("Top 3 Listing Comparison",
+              sidebarLayout(
+                sidebarPanel(
+                  numericInput("pricePreferred", "Preferred Price", 800, min = 0),
+                  numericInput("priceRange", "Price Range (preferred price plus/minus)", 200, min = 0),
+                  selectInput("neighborhood", "Select Neighborhood", 
+                              choices = c("All", unique(uva_housing2$Neighborhood)), 
+                              multiple = FALSE),
+                  sliderInput("distance_uva", "Distance from UVA (miles)", min = 0, max = 10, step = 0.1, value = 1),
+                  sliderInput("num_bedrooms", "Number of bedrooms", min = 1, max = 4, value = 2),
+                  sliderInput("num_bathrooms", "Number of bathrooms", min = 1, max = 4, value = 2),
+                  selectInput("housing_type", "Select Housing Type", 
+                              choices = c("All", unique(uva_housing2$Housing_Type)), 
+                              multiple = FALSE),
+                ),
+                mainPanel(
+                  uiOutput("checkboxUI"),
+                  plotOutput("bedroomPlot"),
+                  plotOutput("bathroomPlot"),
+                  plotOutput("distancePlot"),
+                  plotOutput("pricePlot")
+                  
+                )
+              )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  output$ListingSelector <- renderTable({
+    uva_housing2 %>% 
+      filter(Price_Per_Bedroom <= input$priceHigh,
+             Price_Per_Bedroom >= input$priceLow,
+             Num_Bedrooms == input$num_bedrooms,
+             (Neighborhood == input$neighborhood | input$neighborhood == "All"),
+             (Housing_Type == input$housing_type | input$housing_type == "All"),
+             Distance_UVA <= input$distance_uva)
+  })
+  
+  
+  # Reactive filtered data based on user preferences
+  filtered_data <- reactive({
+    uva_housing2 %>%
+      filter(Price_Per_Bedroom <= input$pricePreferred + input$priceRange,
+             Price_Per_Bedroom >= input$pricePreferred - input$priceRange,
+             Num_Bedrooms <= input$num_bedrooms,
+             (Neighborhood == input$neighborhood | input$neighborhood == "All"),
+             (Housing_Type == input$housing_type | input$housing_type == "All"),
+             Distance_UVA <= input$distance_uva)
+  })
+  
+  # Generate checkboxes for filtered listings
+  output$checkboxUI <- renderUI({
+    available_listings <- filtered_data()
+    checkboxGroupInput(
+      "selected_listings",
+      label = NULL,
+      choices = setNames(available_listings$Listing_ID, 
+                         paste("Name: ", available_listings$Name, " Price:", available_listings$Price_Per_Bedroom,
+                               "Beds:", available_listings$Num_Bedrooms,
+                               "Bathrooms:", available_listings$Num_Bathrooms,
+                               "Dist:", round(available_listings$Distance_UVA, 2), "mi")),
+      selected = NULL
+    )
+  })
+  
+  # Observe the selected listings to enforce a maximum of 5 selections
+  observeEvent(input$selected_listings, {
+    if (length(input$selected_listings) > 5) {
+      # Remove the last selected item if more than 5 are selected
+      updateCheckboxGroupInput(
+        session, "selected_listings",
+        selected = head(input$selected_listings, 5)
+      )
+      showNotification("You can only select up to 3 listings.", type = "warning")
+    }
+  })
+  
+  
+  # Lollipop plot function
+
+  plot_variable <- function(data, x_var, preferred_value, title) {
+    ggplot(data, aes_string(y = "Listing_ID2", x = x_var)) +
+      geom_segment(aes_string(xend = x_var, yend = "Listing_ID2"), color = "black") +
+      geom_vline(xintercept = preferred_value, linetype = "dashed", color = "#F0F921FF", linewidth = 1) +
+      geom_point(size = 8, color = "#6A00A8FF") +
+      geom_text(aes_string(label = x_var), vjust = -0.5, color = "white") +
+      geom_segment(aes(x = preferred_value, xend = !!sym(x_var), y = Listing_ID2, yend = Listing_ID2), 
+                   color = "#FCA636FF", linetype = "dotted", linewidth = 1) + 
+      scale_x_continuous(limits = c(preferred_value - 2, preferred_value + 2)) +  # Center on preferred value
+      theme(axis.text.x = element_text(color = "white"),
+            axis.text.y = element_text(color = "white"), 
+            axis.title = element_text(color = "white"), 
+            plot.title = element_text(hjust = 0.5, color = "white"), 
+            panel.grid.major.x = element_line(color="#242323"),
+            panel.grid.major.y = element_line(color="#242323"),
+            panel.grid.minor.x = element_line(color="#242323"),
+            panel.grid.minor.y = element_line(color="#242323"),
+            panel.background = element_rect(fill = "black"),
+            plot.background = element_rect(fill = "black"),
+            legend.background = element_rect(fill = "black"), 
+            legend.text = element_text(color = "white"), 
+            legend.title = element_text(color = "white"),
+            legend.position = "none") +
+      labs(title = title, x = title, y = NULL)
+  }
+  
+  # Lollipop plots
+  output$bedroomPlot <- renderPlot({
+    selected_listings <- filtered_data() %>% 
+      filter(Listing_ID %in% input$selected_listings)
+    plot_variable(selected_listings, "Num_Bedrooms", input$num_bedrooms, "Number of Bedrooms")
+  })
+  
+  output$bathroomPlot <- renderPlot({
+    selected_listings <- filtered_data() %>% 
+      filter(Listing_ID %in% input$selected_listings)
+    plot_variable(selected_listings, "Num_Bathrooms", input$num_bathrooms, "Number of Bathrooms")
+  })
+  
+  output$distancePlot <- renderPlot({
+    selected_listings <- filtered_data() %>% 
+      filter(Listing_ID %in% input$selected_listings)
+    plot_variable(selected_listings, "Distance_UVA", input$distance_uva, "Distance from UVA (miles)")
+  })
+  
+  output$pricePlot <- renderPlot({
+    selected_listings <- filtered_data() %>% 
+      filter(Listing_ID %in% input$selected_listings)
+    
+    
+    # Set x-axis range based on input price range
+    price_min <- input$pricePreferred - input$priceRange
+    price_max <- input$pricePreferred + input$priceRange
+    
+    # Generate plot
+    ggplot(selected_listings, aes_string(y = "Listing_ID2", x = "Price_Per_Bedroom")) +
+      geom_segment(aes_string(xend = "Price_Per_Bedroom", yend = "Listing_ID2"), color = "black") +
+      geom_vline(xintercept = input$pricePreferred, linetype = "dashed", color = "#F0F921FF", linewidth = 1) +  # Red dashed line at preferred price
+      geom_point(size = 8, color = "#6A00A8FF") +
+      geom_text(aes_string(label = "Price_Per_Bedroom"), vjust = -0.5, color = "white") +
+      geom_segment(aes(x = Price_Per_Bedroom, xend = input$pricePreferred, y = Listing_ID2, yend = Listing_ID2), 
+                   color = "#FCA636FF", linetype = "dotted", linewidth = 1) + 
+      scale_x_continuous(limits = c(price_min, price_max)) +  # X-axis interval from preferred - range to preferred + range
+      theme(axis.text.x = element_text(color = "white"),
+            axis.text.y = element_text(color = "white"), 
+            axis.title = element_text(color = "white"), 
+            plot.title = element_text(hjust = 0.5, color = "white"), 
+            panel.grid.major.x = element_line(color="#242323"),
+            panel.grid.major.y = element_line(color="#242323"),
+            panel.grid.minor.x = element_line(color="#242323"),
+            panel.grid.minor.y = element_line(color="#242323"),
+            panel.background = element_rect(fill = "black"),
+            plot.background = element_rect(fill = "black"),
+            legend.background = element_rect(fill = "black"), 
+            legend.text = element_text(color = "white"), 
+            legend.title = element_text(color = "white"),
+            legend.position = "none") +
+      labs(title = "Price Per Bedroom", x = "Price Per Bedroom", y = NULL)
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+```
